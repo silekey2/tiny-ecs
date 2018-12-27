@@ -378,8 +378,20 @@ local function processingSystemUpdate(system, dt)
         if system.nocache then
             local entities = system.world.entityList
 			local filters = system.filters
-			for ii = 1, #filters do
-				local filter = filters[ii]
+            if filters ~= nil then
+    			for ii = 1, #filters do
+    				local filter = filters[ii]
+    				if filter then
+    					for i = 1, #entities do
+    						local entity = entities[i]
+    						if filter(system, entity) then
+    							process(system, entity, dt, filter)
+    						end
+    					end
+    				end
+    			end
+            else
+				local filter = system.filter
 				if filter then
 					for i = 1, #entities do
 						local entity = entities[i]
@@ -388,17 +400,25 @@ local function processingSystemUpdate(system, dt)
 						end
 					end
 				end
-			end
+            end
         else
             local entities = system.entities
 			local filters = system.filters
-			for ii = 1, #filters do 
-				local filter = filters[ii]
-				local entities = filter.entities
-			    for i = 1, #entities do
-					process(system, entities[i], dt, filter)
-				end
-			end
+            if filters ~= nil then
+    			for ii = 1, #filters do 
+    				local filter = filters[ii]
+    				local entities = filter.entities
+    			    for i = 1, #entities do
+    					process(system, entities[i], dt, filter)
+    				end
+    			end
+            else
+                local filter = system.filter
+                local entities = filter.entities
+                for i = 1, #entities do
+                    process(system, entities[i], dt, filter)
+                end
+            end
 			--[[
             for i = 1, #entities do
                 process(system, entities[i], dt)
@@ -519,8 +539,10 @@ function tiny.world(...)
         entities = {},
 
         -- List of Systems
-        systems = {}
+        systems = {},
 
+        -- global of world
+        global = {},
     }, worldMetaTable)
 
     tiny_add(ret, ...)
@@ -621,9 +643,19 @@ function tiny_manageSystems(world)
         local index = system.index
         local onRemove = system.onRemove
         if onRemove and not system.nocache then
-            local entityList = system.entities
-            for j = 1, #entityList do
-                onRemove(system, entityList[j])
+            local filters = system.filters
+            if filters ~= nil then
+                for ii = 1, #filters do
+                    local entityList = filters[ii].entities--system.entities
+                    for j = 1, #entityList do
+                        onRemove(system, entityList[j])
+                    end
+                end
+            else
+                local entityList = system.filter.entities--system.entities
+                for j = 1, #entityList do
+                    onRemove(system, entityList[j])
+                end
             end
         end
         tremove(systems, index)
@@ -647,10 +679,12 @@ function tiny_manageSystems(world)
     for i = 1, #s2a do
         local system = s2a[i]
         if systems[system.index or 0] ~= system then
+            --[[
             if not system.nocache then
                 system.entities = {}
                 system.indices = {}
             end
+            ]]
             if system.active == nil then
                 system.active = true
             end
@@ -666,11 +700,30 @@ function tiny_manageSystems(world)
 
             -- Try to add Entities
             if not system.nocache then
-                local entityList = system.entities
-                local entityIndices = system.indices
                 local onAdd = system.onAdd
                 local filter = system.filter
-                if filter then
+                local filters = system.filters
+                if filters then
+                    for ii = 1, #filters do
+                        local filter = filters[ii]
+
+                        local entityList = filter.entities
+                        local entityIndices = filter.indices
+                        for j = 1, #worldEntityList do
+                            local entity = worldEntityList[j]
+                            if filter(system, entity) then
+                                local entityIndex = #entityList + 1
+                                entityList[entityIndex] = entity
+                                entityIndices[entity] = entityIndex
+                                if onAdd then
+                                    onAdd(system, entity, filter)
+                                end
+                            end
+                        end
+                    end
+                elseif filter then
+                    local entityList = filter.entities
+                    local entityIndices = filter.indices
                     for j = 1, #worldEntityList do
                         local entity = worldEntityList[j]
                         if filter(system, entity) then
@@ -678,7 +731,7 @@ function tiny_manageSystems(world)
                             entityList[entityIndex] = entity
                             entityIndices[entity] = entityIndex
                             if onAdd then
-                                onAdd(system, entity)
+                                onAdd(system, entity, filter)
                             end
                         end
                     end
@@ -938,6 +991,15 @@ function tiny.setSystemIndex(world, system, index)
     return oldIndex
 end
 
+function tiny.getGlobal(world, name)
+    return world.global[name]
+end
+
+function tiny.setGlobal(world, name, value)
+    world.global[name] = value
+    return value
+end
+
 -- Construct world metatable.
 worldMetaTable = {
     __index = {
@@ -953,7 +1015,9 @@ worldMetaTable = {
         clearSystems = tiny.clearSystems,
         getEntityCount = tiny.getEntityCount,
         getSystemCount = tiny.getSystemCount,
-        setSystemIndex = tiny.setSystemIndex
+        setSystemIndex = tiny.setSystemIndex,
+        getGlobal = tiny.getGlobal,
+        setGlobal = tiny.setGlobal
     },
     __tostring = function()
         return "<tiny-ecs_World>"
