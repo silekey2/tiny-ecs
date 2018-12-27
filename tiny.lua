@@ -127,9 +127,75 @@ do
         return loader(...)
     end
 
+    -- 过滤器对象, 包含过滤函数与过滤后数据的缓存
+    local filterClass = {}
+	local filterMetable = {__call = function(self, ...)
+		return self.func(...)
+	end, __index = filterClass}
+    
+    -- 触发修改操作, entity 添加, component删除与添加
+    function filterClass.change(self, system, entity)
+        local ses = self.entities
+        local seis = self.indices
+        local index = seis[entity]
+        local filter = self.func
+        if filter and filter(system, entity) then
+            if not index then
+                system.modified = true
+                index = #ses + 1
+                ses[index] = entity
+                seis[entity] = index
+                local onAdd = system.onAdd
+                if onAdd then
+                    onAdd(system, entity, self)
+                end
+            end
+        elseif index then
+            system.modified = true
+            local tmpEntity = ses[#ses]
+            ses[index] = tmpEntity
+            seis[tmpEntity] = index
+            seis[entity] = nil
+            ses[#ses] = nil
+            local onRemove = system.onRemove
+            if onRemove then
+                onRemove(system, entity, self)
+            end
+        end
+    end
+
+    -- 出发删除操作
+    function filterClass.remove(self, system, entity)
+        local ses = self.entities
+        local seis = self.indices
+        local index = seis[entity]
+        if index then
+            system.modified = true
+            local tmpEntity = ses[#ses]
+            ses[index] = tmpEntity
+            seis[tmpEntity] = index
+            seis[entity] = nil
+            ses[#ses] = nil
+            local onRemove = system.onRemove
+            if onRemove then
+                onRemove(system, entity, self)
+            end
+        end
+    end
+
+	local function createFilterObject(funcFilter)
+		local o = {entities = {}, indices={}, func = funcFilter}
+		setmetatable (o, filterMetable)
+		return o
+	end
+
     function filterJoin(...)
         local state, value = pcall(filterJoinRaw, ...)
-        if state then return value else return nil, value end
+        if state then 
+			return createFilterObject(value)
+		else 
+			return nil, value 
+		end
     end
 
     local function buildPart(str)
@@ -204,7 +270,7 @@ end
 -- @param pattern
 function tiny.filter(pattern)
     local state, value = pcall(filterBuildString, pattern)
-    if state then return value else return nil, value end
+    if state then return createFilterObject(value) else return nil, value end
 end
 
 --- System functions.
@@ -311,20 +377,33 @@ local function processingSystemUpdate(system, dt)
     if process then
         if system.nocache then
             local entities = system.world.entityList
-            local filter = system.filter
-            if filter then
-                for i = 1, #entities do
-                    local entity = entities[i]
-                    if filter(system, entity) then
-                        process(system, entity, dt)
-                    end
-                end
-            end
+			local filters = system.filters
+			for ii = 1, #filters do
+				local filter = filters[ii]
+				if filter then
+					for i = 1, #entities do
+						local entity = entities[i]
+						if filter(system, entity) then
+							process(system, entity, dt, filter)
+						end
+					end
+				end
+			end
         else
             local entities = system.entities
+			local filters = system.filters
+			for ii = 1, #filters do 
+				local filter = filters[ii]
+				local entities = filter.entities
+			    for i = 1, #entities do
+					process(system, entities[i], dt, filter)
+				end
+			end
+			--[[
             for i = 1, #entities do
                 process(system, entities[i], dt)
             end
+			]]
         end
     end
 
@@ -639,6 +718,15 @@ function tiny_manageEntities(world)
         for j = 1, #systems do
             local system = systems[j]
             if not system.nocache then
+                local filters = system.filters
+                if filters ~= nil then
+                    for k = 1, #filters do
+                        filters[k]:change(system, entity)
+                    end
+                else
+                    system.filter:change(system, entity)
+                end
+                --[[
                 local ses = system.entities
                 local seis = system.indices
                 local index = seis[entity]
@@ -666,6 +754,7 @@ function tiny_manageEntities(world)
                         onRemove(system, entity)
                     end
                 end
+                ]]
             end
         end
         e2c[i] = nil
@@ -687,6 +776,15 @@ function tiny_manageEntities(world)
             for j = 1, #systems do
                 local system = systems[j]
                 if not system.nocache then
+                    local filters = system.filters
+                    if filters ~= nil then
+                        for k = 1, #filters do
+                            filters[k]:remove(system, entity)
+                        end
+                    else
+                        system.filter:remove(system, entity)
+                    end
+                    --[[
                     local ses = system.entities
                     local seis = system.indices
                     local index = seis[entity]
@@ -702,6 +800,7 @@ function tiny_manageEntities(world)
                             onRemove(system, entity)
                         end
                     end
+                    ]]
                 end
             end
         end
